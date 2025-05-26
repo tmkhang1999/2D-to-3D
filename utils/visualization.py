@@ -1,3 +1,4 @@
+import argparse
 from pathlib import Path
 
 """
@@ -196,7 +197,20 @@ def visualize_file(file_path):
     print(f"Visualizing {file_path.name}...")
     o3d.visualization.draw_geometries([geometry])
 
-
+import sys
 if __name__ == "__main__":
-    path = Path("./dataset/results/cloud_single_pair.ply")
+    parser = argparse.ArgumentParser(description="Visualize a .ply file from a specified path.")
+    parser.add_argument(
+        "--path", type=str, required=False,
+        default="./dataset/office/results/cloud_single_pair_21_22.ply",
+        help="Path to the .ply file"
+    )
+    args = parser.parse_args()
+
+    path = Path(args.path)
+
+    if not path.is_file():
+        print(f"Error: The specified file does not exist: {path}")
+        sys.exit(1)
+
     visualize_file(path)
