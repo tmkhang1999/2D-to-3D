@@ -18,7 +18,6 @@ def load_colmap(scene_dir: Path):
 
     # Correct way to read COLMAP data with pycolmap
     reconstruction = pycolmap.Reconstruction(str(reconstruction_path))
-    print(reconstruction.summary())
 
     # Extract cameras, images and points
     cams = {cam.camera_id: cam for cam in reconstruction.cameras.values()}
@@ -139,3 +138,46 @@ def find_neighbor_views(imgs, pair_B, ref_id, k=3, min_B=0.1, max_B=1.1, min_ove
     pairs.sort(key=lambda x: (-x[2], x[1]))
 
     return [id for id, _, _ in pairs[:k]]
+
+
+import numpy as np
+
+
+def compute_depth_range_from_colmap(points3D, imgs, K, T_wc, ref_id, second_id, baseline):
+    valid_pids = []
+    for pt in imgs[ref_id].points2D:
+        pid = pt.point3D_id
+        # 1) try casting to int
+        try:
+            pid = int(pid)
+        except (TypeError, ValueError):
+            continue
+        # 2) skip negative IDs (COLMAP uses –1 for “no point”)
+        if pid < 0:
+            continue
+        # 3) skip if it's missing from the points3D dict
+        if pid not in points3D:
+            continue
+        valid_pids.append(pid)
+
+    if not valid_pids:
+        raise RuntimeError(f"No valid 3D points found for image {ref_id}")
+
+    # Stack their world‐coordinates
+    pts_world = np.vstack([points3D[pid].xyz for pid in set(valid_pids)])
+
+    # Transform points to the camera coordinate frame
+    T = T_wc[ref_id]
+    R, t = T[:3, :3], T[:3, 3]
+    pts_cam = (R @ pts_world.T).T + t
+
+    # Get depth range
+    Znear, Zfar = pts_cam[:, 2].min(), pts_cam[:, 2].max()
+
+    # Compute disparity bounds
+    f = K[ref_id][0, 0]  # focal length in pixels
+    vmax = (f * baseline) / Znear  # max disparity (closest)
+    vmin = (f * baseline) / Zfar   # min disparity (farthest)
+
+    return vmin, vmax
+
