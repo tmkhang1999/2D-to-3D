@@ -3,59 +3,99 @@ import open3d as o3d
 from utils.stereo import rectify_pair, compute_filtered_disparity, disparity_to_cloud
 
 
-def clean_cloud(pcl, colors=None, voxel=0.002):
+
+def clean_cloud(pcl, colors, voxel_size=0.01, nb_neighbors=20, std_ratio=2.0):
     """
-    Filter outliers and regularize point cloud for ETH3D datasets.
-
-    Args:
-        pcl: Nx3 array of points or Open3D point cloud
-        colors: Optional Nx3 array of RGB colors
-        voxel: Voxel size for downsampling (default: 0.002 for indoor scenes)
-
-    Returns:
-        o3d.geometry.PointCloud: Cleaned point cloud
+    Additional point cloud cleaning function
     """
-    # Handle different input types
-    if isinstance(pcl, np.ndarray):
-        cloud = o3d.geometry.PointCloud()
-        cloud.points = o3d.utility.Vector3dVector(pcl)
-        if colors is not None:
-            colors_float = colors.astype(np.float64) / 255.0
-            cloud.colors = o3d.utility.Vector3dVector(colors_float)
-    else:
-        cloud = pcl
+    import open3d as o3d
 
-    # Early exit if empty
-    if len(cloud.points) == 0:
-        return cloud
+    if len(pcl) == 0:
+        print("Warning: Empty point cloud provided for cleaning")
+        return o3d.geometry.PointCloud()
 
-    # Remove NaN and infinite points
-    cloud = cloud.remove_non_finite_points()
+    # Create Open3D point cloud
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(pcl)
 
-    if len(cloud.points) == 0:
-        return cloud
+    if colors is not None and len(colors) > 0:
+        # Normalize colors to [0,1] range
+        if colors.max() > 1.0:
+            colors = colors.astype(np.float32) / 255.0
+        cloud.colors = o3d.utility.Vector3dVector(colors)
 
-    # Statistical outlier removal - balanced for ETH3D indoor scenes
-    cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=25, std_ratio=1.8)
+    print(f"Original cloud: {len(cloud.points)} points")
 
-    if len(cloud.points) == 0:
-        return cloud
+    # Voxel downsampling
+    if voxel_size > 0:
+        cloud = cloud.voxel_down_sample(voxel_size)
+        print(f"After voxel downsampling: {len(cloud.points)} points")
 
-    # Radius outlier removal - tuned for indoor scene density
-    cloud, _ = cloud.remove_radius_outlier(nb_points=25, radius=0.04)
+    # Statistical outlier removal
+    if len(cloud.points) > nb_neighbors:
+        cloud, _ = cloud.remove_statistical_outlier(nb_neighbors, std_ratio)
+        print(f"After statistical filtering: {len(cloud.points)} points")
 
-    if len(cloud.points) == 0:
-        return cloud
-
-    # Voxel downsampling - good balance for indoor scene detail
-    cloud = cloud.voxel_down_sample(voxel)
-
-    # Estimate normals for subsequent meshing
-    cloud.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.03, max_nn=30))
-    cloud.orient_normals_consistent_tangent_plane(40)
+    # Remove isolated points
+    if len(cloud.points) > 50:
+        cloud, _ = cloud.remove_radius_outlier(nb_points=10, radius=0.05)
+        print(f"After radius filtering: {len(cloud.points)} points")
 
     return cloud
+
+# def clean_cloud(pcl, colors=None, voxel=0.002):
+#     """
+#     Filter outliers and regularize point cloud for ETH3D datasets.
+#
+#     Args:
+#         pcl: Nx3 array of points or Open3D point cloud
+#         colors: Optional Nx3 array of RGB colors
+#         voxel: Voxel size for downsampling (default: 0.002 for indoor scenes)
+#
+#     Returns:
+#         o3d.geometry.PointCloud: Cleaned point cloud
+#     """
+#     # Handle different input types
+#     if isinstance(pcl, np.ndarray):
+#         cloud = o3d.geometry.PointCloud()
+#         cloud.points = o3d.utility.Vector3dVector(pcl)
+#         if colors is not None:
+#             colors_float = colors.astype(np.float64) / 255.0
+#             cloud.colors = o3d.utility.Vector3dVector(colors_float)
+#     else:
+#         cloud = pcl
+#
+#     # Early exit if empty
+#     if len(cloud.points) == 0:
+#         return cloud
+#
+#     # Remove NaN and infinite points
+#     cloud = cloud.remove_non_finite_points()
+#
+#     if len(cloud.points) == 0:
+#         return cloud
+#
+#     # Statistical outlier removal - balanced for ETH3D indoor scenes
+#     cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=25, std_ratio=1.8)
+#
+#     if len(cloud.points) == 0:
+#         return cloud
+#
+#     # Radius outlier removal - tuned for indoor scene density
+#     cloud, _ = cloud.remove_radius_outlier(nb_points=25, radius=0.04)
+#
+#     if len(cloud.points) == 0:
+#         return cloud
+#
+#     # Voxel downsampling - good balance for indoor scene detail
+#     cloud = cloud.voxel_down_sample(voxel)
+#
+#     # Estimate normals for subsequent meshing
+#     cloud.estimate_normals(
+#         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.03, max_nn=30))
+#     cloud.orient_normals_consistent_tangent_plane(40)
+#
+#     return cloud
 
 
 def ensure_normals(cloud, radius=0.05, max_nn=50):
