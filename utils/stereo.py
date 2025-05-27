@@ -5,7 +5,8 @@ import numpy as np
 def sgbm_with_consistency(min_disp=None, num_disp=None):
     if min_disp is None:
         min_disp = 0
-        max_disp = 192  # must be divisible by 16
+        max_disp = 192
+        # must be divisible by 16
         num_disp = (max_disp - min_disp) // 16 * 16
 
     print(f"Using SGBM with min_disp={min_disp}, num_disp={num_disp}")
@@ -16,9 +17,9 @@ def sgbm_with_consistency(min_disp=None, num_disp=None):
         blockSize=block_size,
         P1=8 * 3 * block_size ** 2,  # 3 channels, increased regularization
         P2=32 * 3 * block_size ** 2,
-        disp12MaxDiff=1, # Slightly relaxed for more matches
+        disp12MaxDiff=1,  # Slightly relaxed for more matches
         uniquenessRatio=5,  # Increased for better uniqueness
-        speckleWindowSize=50, # Increased to remove more noise
+        speckleWindowSize=50,  # Increased to remove more noise
         speckleRange=2,
         preFilterCap=31,
         mode=cv2.STEREO_SGBM_MODE_SGBM_3WAY
@@ -27,8 +28,8 @@ def sgbm_with_consistency(min_disp=None, num_disp=None):
     right_matcher = cv2.ximgproc.createRightMatcher(left_matcher)
 
     wls_filter = cv2.ximgproc.createDisparityWLSFilter(matcher_left=left_matcher)
-    wls_filter.setLambda(10000.0)  # stronger smoothness
-    wls_filter.setSigmaColor(1.8)  # preserve edges
+    wls_filter.setLambda(12000.0)  # stronger smoothness
+    wls_filter.setSigmaColor(2)  # preserve edges
 
     return left_matcher, right_matcher, wls_filter
 
@@ -39,12 +40,12 @@ def compute_filtered_disparity(left_img, right_img, left_matcher, right_matcher,
     gray_right = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY)
 
     # 1. CLAHE for contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=2.0, tileGridSize=(8, 8))
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
     gray_left = clahe.apply(gray_left)
     gray_right = clahe.apply(gray_right)
 
     # 2. Bilateral filter to reduce noise while preserving edges
-    gray_left = cv2.bilateralFilter(gray_left, 5, 50, 50)
+    gray_left = cv2.bilateralFilter(gray_left,5, 50,50)
     gray_right = cv2.bilateralFilter(gray_right, 5, 50, 50)
 
     # Compute both left and right disparities
@@ -63,90 +64,44 @@ def compute_filtered_disparity(left_img, right_img, left_matcher, right_matcher,
     return filtered_disp, valid_mask
 
 
-def disparity_to_cloud(disp, Q, mask=None, color_img=None, min_depth=0.1, max_depth=100.0):
+def disparity_to_cloud(disp, Q, mask=None, color_img=None, min_depth=0.1, max_depth=30.0):
     """
-    Convert disparity to point cloud with robust filtering for ETH3D and Middlebury datasets.
-
-    Parameters:
-    -----------
-    disp : numpy.ndarray
-        Disparity map
-    Q : numpy.ndarray
-        Perspective transformation matrix (4x4)
-    mask : numpy.ndarray, optional
-        Initial validity mask
-    color_img : numpy.ndarray, optional
-        Color image for point coloring (BGR format)
-    min_depth : float, optional
-        Minimum valid depth in meters
-    max_depth : float, optional
-        Maximum valid depth in meters
-
-    Returns:
-    --------
-    pcl : numpy.ndarray
-        3D points array (N,3)
-    colors : numpy.ndarray or None
-        Color values (N,3) if color_img provided, otherwise None
+    Convert disparity to point cloud with optional color and depth filtering
     """
-    # Clean disparity map
-    disp_work = disp.copy().astype(np.float32)
-    disp_work[disp_work < 1.0] = 0  # Set very small disparities to 0
-    disp_work[np.isnan(disp_work) | np.isinf(disp_work)] = 0
+    # Clamp small disparities to avoid far-plane explosions
+    disp_valid = disp.copy().astype(np.float32)
+    disp_valid[disp_valid <= 0] = 0
+    disp_valid[np.isnan(disp_valid)] = 0
+    disp_valid[np.isinf(disp_valid)] = 0
 
     # Apply initial mask if provided
     if mask is not None:
-        disp_work[~mask] = 0
+        mask = mask & (disp_valid > 0)
     else:
-        mask = disp_work > 0
-
-    # Report disparity stats
-    valid_disparities = disp_work[disp_work > 0]
-    if len(valid_disparities) > 0:
-        print(f"Disparity range: {valid_disparities.min():.2f} to {disp_work.max():.2f}")
-    else:
-        print("Warning: No valid disparities found!")
-        return np.array([]).reshape(0, 3), np.array([])
+        mask = disp_valid > 0
 
     # Reproject to 3D
-    points_3d = cv2.reprojectImageTo3D(disp_work, Q, handleMissingValues=True)
+    pts = cv2.reprojectImageTo3D(disp_valid, Q, handleMissingValues=True)
 
-    # Check validity of 3D points
-    valid_3d = (
-            (disp_work > 0) &
-            (~np.isinf(points_3d).any(axis=2)) &
-            (~np.isnan(points_3d).any(axis=2))
-    )
+    # Apply depth limits and remove outliers
+    depths = np.linalg.norm(pts, axis=2)
+    depth_mask = (depths > min_depth) & (depths < max_depth)
+    mask = mask & depth_mask
 
-    # Apply depth filtering
-    depths = np.linalg.norm(points_3d, axis=2)
-    depth_mask = (depths > min_depth) & (depths < max_depth) & valid_3d
-
-    # Add gradient-based filtering for Middlebury (helps with flat surfaces)
+    # Remove points with large depth discontinuities
     depth_grad = np.gradient(depths)
     grad_mask = (np.abs(depth_grad[0]) < 1.0) & (np.abs(depth_grad[1]) < 1.0)
+    mask = mask & grad_mask
 
-    # Combine all masks
-    final_mask = depth_mask & grad_mask
-
-    # Check if we have points left
-    if final_mask.sum() == 0:
-        print("ERROR: No valid 3D points after filtering!")
-        return np.array([]).reshape(0, 3), np.array([])
-
-    # Extract final points
-    pcl = points_3d[final_mask]
+    # Extract valid points
+    pcl = pts[mask]
 
     # Add color if available
     colors = None
     if color_img is not None:
-        colors = color_img[final_mask]
+        colors = color_img[mask]
         if colors.shape[1] == 3:
             colors = colors[:, [2, 1, 0]]  # BGR to RGB
-
-    print(f"Final point cloud: {len(pcl)} points")
-    if len(pcl) > 0:
-        print(f"Depth range: {pcl[:, 2].min():.2f} to {pcl[:, 2].max():.2f}m")
 
     return pcl, colors
 

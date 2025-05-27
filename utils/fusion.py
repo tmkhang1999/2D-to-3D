@@ -43,60 +43,6 @@ def clean_cloud(pcl, colors, voxel_size=0.01, nb_neighbors=20, std_ratio=2.0):
 
     return cloud
 
-# def clean_cloud(pcl, colors=None, voxel=0.002):
-#     """
-#     Filter outliers and regularize point cloud for ETH3D datasets.
-#
-#     Args:
-#         pcl: Nx3 array of points or Open3D point cloud
-#         colors: Optional Nx3 array of RGB colors
-#         voxel: Voxel size for downsampling (default: 0.002 for indoor scenes)
-#
-#     Returns:
-#         o3d.geometry.PointCloud: Cleaned point cloud
-#     """
-#     # Handle different input types
-#     if isinstance(pcl, np.ndarray):
-#         cloud = o3d.geometry.PointCloud()
-#         cloud.points = o3d.utility.Vector3dVector(pcl)
-#         if colors is not None:
-#             colors_float = colors.astype(np.float64) / 255.0
-#             cloud.colors = o3d.utility.Vector3dVector(colors_float)
-#     else:
-#         cloud = pcl
-#
-#     # Early exit if empty
-#     if len(cloud.points) == 0:
-#         return cloud
-#
-#     # Remove NaN and infinite points
-#     cloud = cloud.remove_non_finite_points()
-#
-#     if len(cloud.points) == 0:
-#         return cloud
-#
-#     # Statistical outlier removal - balanced for ETH3D indoor scenes
-#     cloud, _ = cloud.remove_statistical_outlier(nb_neighbors=25, std_ratio=1.8)
-#
-#     if len(cloud.points) == 0:
-#         return cloud
-#
-#     # Radius outlier removal - tuned for indoor scene density
-#     cloud, _ = cloud.remove_radius_outlier(nb_points=25, radius=0.04)
-#
-#     if len(cloud.points) == 0:
-#         return cloud
-#
-#     # Voxel downsampling - good balance for indoor scene detail
-#     cloud = cloud.voxel_down_sample(voxel)
-#
-#     # Estimate normals for subsequent meshing
-#     cloud.estimate_normals(
-#         search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.03, max_nn=30))
-#     cloud.orient_normals_consistent_tangent_plane(40)
-#
-#     return cloud
-
 
 def ensure_normals(cloud, radius=0.05, max_nn=50):
     """Ensure point cloud has oriented normals.
