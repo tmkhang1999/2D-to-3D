@@ -170,6 +170,17 @@ def draw_rectification_check(rect1, rect2, step=150):
     return img1, img2
 
 
+def save_rectified_pair(rect_img1, rect_img2, save_path):
+    h = min(rect_img1.shape[0], rect_img2.shape[0])
+    img1 = rect_img1[:h]
+    img2 = rect_img2[:h]
+
+    # Draw horizontal lines
+    combined = np.hstack((img1, img2))
+    for y in range(0, h, 150):
+        cv2.line(combined, (0, y), (combined.shape[1], y), (0, 255, 0), 2)
+    cv2.imwrite(save_path, combined)
+
 def visualize_file(file_path):
     file_path = Path(file_path)
 
@@ -196,6 +207,8 @@ def visualize_file(file_path):
     # Visualize
     print(f"Visualizing {file_path.name}...")
     o3d.visualization.draw_geometries([geometry])
+
+
 
 import sys
 if __name__ == "__main__":
