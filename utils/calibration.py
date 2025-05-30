@@ -1,6 +1,5 @@
 from pathlib import Path
-
-import numpy as np
+import re
 import pycolmap
 
 
@@ -181,3 +180,65 @@ def compute_depth_range_from_colmap(points3D, imgs, K, T_wc, ref_id, second_id, 
 
     return vmin, vmax
 
+
+def load_middlebury_calib(calib_path: Path):
+    s = calib_path.read_text()
+    m0 = re.search(r"cam0=\[([^\]]+)\]", s).group(1)
+    m1 = re.search(r"cam1=\[([^\]]+)\]", s).group(1)
+
+    # replace semicolons (row separators) with spaces
+    m0 = m0.replace(';', ' ')
+    m1 = m1.replace(';', ' ')
+
+    # now safely parse into 9 floats and reshape
+    K0 = np.fromstring(m0, sep=' ').reshape(3, 3)
+    K1 = np.fromstring(m1, sep=' ').reshape(3, 3)
+
+    doffs = float(re.search(r"doffs=([-\d.]+)", s).group(1))
+    baseline = float(re.search(r"baseline=([-\d.]+)", s).group(1))
+    width = int(re.search(r"width=(\d+)", s).group(1))
+    height = int(re.search(r"height=(\d+)", s).group(1))
+    ndisp = int(re.search(r"ndisp=(\d+)", s).group(1))
+    vmin = int(re.search(r"vmin=(\d+)", s).group(1))
+    vmax = int(re.search(r"vmax=(\d+)", s).group(1))
+
+    return K0, K1, doffs, baseline, width, height, ndisp, vmin, vmax
+
+
+def read_pfm_file(filename):
+    """Read a PFM file into a numpy array"""
+    file = open(filename, 'rb')
+    color = None
+    width = None
+    height = None
+    scale = None
+    endian = None
+
+    header = file.readline().decode('utf-8').rstrip()
+    if header == 'PF':
+        color = True
+    elif header == 'Pf':
+        color = False
+    else:
+        raise Exception('Not a PFM file.')
+
+    dim_match = re.match(r'^(\d+)\s(\d+)\s$', file.readline().decode('utf-8'))
+    if dim_match:
+        width, height = map(int, dim_match.groups())
+    else:
+        raise Exception('Malformed PFM header.')
+
+    scale = float(file.readline().rstrip())
+    if scale < 0:  # little-endian
+        endian = '<'
+        scale = -scale
+    else:
+        endian = '>'  # big-endian
+
+    data = np.fromfile(file, endian + 'f')
+    shape = (height, width, 3) if color else (height, width)
+
+    data = np.reshape(data, shape)
+    data = np.flipud(data)
+    file.close()
+    return data, scale
