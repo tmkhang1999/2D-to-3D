@@ -1,5 +1,6 @@
 import cv2
 import numpy as np
+import open3d as o3d
 
 
 def sgbm_with_consistency(min_disp=None, num_disp=None):
@@ -39,13 +40,14 @@ def compute_filtered_disparity(left_img, right_img, left_matcher, right_matcher,
     gray_left = cv2.cvtColor(left_img, cv2.COLOR_BGR2GRAY)
     gray_right = cv2.cvtColor(right_img, cv2.COLOR_BGR2GRAY)
 
-    # 1. CLAHE for contrast enhancement
-    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(8, 8))
+    # 1. CLAHE for contrast enhancement (Adaptive Histogram Equalization) cv2.createCLAHE(
+    # CLAHE helps boost faint gradients on walls/floors - increase contrast in low-texture areas
+    clahe = cv2.createCLAHE(clipLimit=3.0, tileGridSize=(32, 32))
     gray_left = clahe.apply(gray_left)
     gray_right = clahe.apply(gray_right)
 
     # 2. Bilateral filter to reduce noise while preserving edges
-    gray_left = cv2.bilateralFilter(gray_left,5, 50,50)
+    gray_left = cv2.bilateralFilter(gray_left, 5, 50, 50)
     gray_right = cv2.bilateralFilter(gray_right, 5, 50, 50)
 
     # Compute both left and right disparities
@@ -104,6 +106,42 @@ def disparity_to_cloud(disp, Q, mask=None, color_img=None, min_depth=0.1, max_de
             colors = colors[:, [2, 1, 0]]  # BGR to RGB
 
     return pcl, colors
+
+
+def create_gt_cloud(disp_gt, Q, valid_mask, color_img, R=None, t=None):
+    """Create point cloud from ground truth disparity map
+
+    Args:
+        disp_gt: Ground truth disparity map
+        Q: Reprojection matrix
+        valid_mask: Validity mask
+        color_img: Color image
+        R: Optional rotation matrix
+        t: Optional translation vector
+
+    Returns:
+        o3d.geometry.PointCloud: Point cloud in world coordinates
+    """
+    # Create mask for valid GT points
+    mask = (disp_gt > 0) & np.isfinite(disp_gt) & valid_mask
+
+    # Generate point cloud
+    pts, colors = disparity_to_cloud(disp_gt, Q, mask, color_img)
+
+    # Create Open3D point cloud
+    cloud = o3d.geometry.PointCloud()
+    cloud.points = o3d.utility.Vector3dVector(pts)
+    if colors is not None:
+        cloud.colors = o3d.utility.Vector3dVector(colors.astype(np.float32) / 255.0)
+
+    # Transform to world frame if extrinsics provided
+    if R is not None and t is not None:
+        T = np.eye(4)
+        T[:3, :3] = R
+        T[:3, 3] = t.ravel()
+        cloud.transform(T)
+
+    return cloud
 
 
 def rectify_pair(img_id1, img_id2, imgs, K, T_wc, scene_dir, resize=0.5):
