@@ -44,56 +44,98 @@ def clean_cloud(pcl, colors, voxel_size=0.01, nb_neighbors=20, std_ratio=2.0):
     return cloud
 
 
-def align_point_clouds(source, target, voxel_size=0.005, max_iterations=50):
-    """Align point clouds using multi-scale ICP with improved parameters"""
-    print("Aligning point clouds...")
-    
-    # Downsample for faster alignment
-    source_down = source.voxel_down_sample(voxel_size)
-    target_down = target.voxel_down_sample(voxel_size)
-    
-    # Estimate normals with larger radius for better orientation
-    source_down.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 3, max_nn=50))
-    target_down.estimate_normals(
-        search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 3, max_nn=50))
-    
-    # Orient normals consistently
-    source_down.orient_normals_consistent_tangent_plane(100)
-    target_down.orient_normals_consistent_tangent_plane(100)
-    
-    # Multi-scale ICP with improved parameters
-    current_transformation = np.eye(4)
-    best_fitness = 0.0
-    
-    for scale in range(3):
-        iter_count = max_iterations // (scale + 1)
-        distance_threshold = voxel_size * (2 ** scale)
-        
-        # Point-to-plane ICP
-        result = o3d.pipelines.registration.registration_icp(
-            source_down, target_down, distance_threshold,
-            current_transformation,
-            o3d.pipelines.registration.TransformationEstimationPointToPlane(),
-            o3d.pipelines.registration.ICPConvergenceCriteria(
-                max_iteration=iter_count,
-                relative_fitness=1e-6,
-                relative_rmse=1e-6
-            )
-        )
-        
-        # Update transformation if better fitness
-        if result.fitness > best_fitness:
-            current_transformation = result.transformation
-            best_fitness = result.fitness
-        
-        # Early termination if alignment is very good
-        if result.fitness > 0.95:
-            break
-    
-    # Apply transformation to full resolution cloud
-    source.transform(current_transformation)
-    return source, best_fitness
+def prepare_for_meshing(cloud, nb_neighbors=50, std_ratio=2.0,
+                        radius=0.06, voxel=0.002):
+    """
+    Prepares a point cloud for mesh generation with ETH3D-specific parameters.
+
+    Args:
+        cloud: Input point cloud
+        nb_neighbors: Number of neighbors for statistical outlier removal
+        std_ratio: Standard deviation ratio for statistical outlier removal
+        radius: Radius for radius outlier removal
+        voxel: Voxel size for downsampling
+
+    Returns:
+        Prepared point cloud ready for meshing
+    """
+    if len(cloud.points) == 0:
+        print("Warning: Empty cloud provided to prepare_for_meshing")
+        return cloud
+
+    # Apply multi-stage filtering with parameters tuned for ETH3D indoor scenes
+    cloud = cloud.voxel_down_sample(voxel)
+    cloud, ind = cloud.remove_statistical_outlier(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
+    print(f"prepare_for_meshing: Removed {len(ind)} statistical outliers.")
+
+    cloud, ind = cloud.remove_radius_outlier(nb_points=30, radius=radius)
+    print(f"prepare_for_meshing: Removed {len(ind)} radius outliers.")
+
+    # Final normal estimation for meshing
+    if len(cloud.points) > 100:
+        cloud.estimate_normals(
+            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.03, max_nn=30))
+        cloud.orient_normals_consistent_tangent_plane(40)
+    else:
+        print("Warning: Not enough points after filtering to estimate normals for meshing.")
+
+    return cloud
+
+
+def create_mesh(cloud: o3d.geometry.PointCloud,
+                depth: int = 8,
+                trim: float = 0.25,
+                target_triangles: int = 500_000,
+                prepare_cloud: bool = True):
+    """
+    Builds a mesh using ball pivoting.
+    """
+    try:
+        # Prepare the cloud for meshing if requested
+        if prepare_cloud:
+            cloud = prepare_for_meshing(cloud)
+
+        if len(cloud.points) < 1000:
+            print(f"Warning: Too few points ({len(cloud.points)}) for reliable meshing.")
+            return None
+
+        # Ensure normals are available and consistently oriented
+        if not cloud.has_normals() or len(cloud.normals) == 0:
+            print("Warning: Normals not available, estimating for meshing.")
+            cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
+                radius=0.02, max_nn=30))
+            cloud.orient_normals_consistent_tangent_plane(50)
+
+        # Use ball pivoting for mesh creation
+        radii = [0.005, 0.01, 0.02, 0.04, 0.08]  # Use increasing radii
+        print("Attempting ball pivoting mesh creation...")
+        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
+            cloud, o3d.utility.DoubleVector(radii))
+
+        # Clean up the mesh
+        mesh.remove_degenerate_triangles()
+        mesh.remove_duplicated_triangles()
+        mesh.remove_duplicated_vertices()
+        mesh.remove_non_manifold_edges()
+        print(f"Ball pivoting created mesh with {len(mesh.vertices)} vertices and {len(mesh.triangles)} triangles.")
+
+        # Final cleanup and simplification
+        if len(mesh.vertices) > 0 and len(mesh.triangles) > 0:
+            mesh = mesh.crop(cloud.get_axis_aligned_bounding_box())
+            # Simplify to a reasonable number of triangles if it's very large
+            if len(mesh.triangles) > target_triangles * 1.5:
+                print(f"Simplifying mesh from {len(mesh.triangles)} to {target_triangles} triangles.")
+                mesh = mesh.simplify_quadric_decimation(target_triangles)
+            mesh.compute_vertex_normals()
+            print(f"Final mesh has {len(mesh.vertices)} vertices and {len(mesh.triangles)} triangles after cleanup.")
+        else:
+            print("Warning: Final mesh is empty after cleanup/simplification.")
+            return None  # Return None if the mesh becomes empty
+
+        return mesh
+    except Exception as e:
+        print(f"Mesh reconstruction failed completely in create_mesh: {str(e)}")
+        return None
 
 
 def create_textured_mesh(mesh, images, K, T_wc, scene_dir):
@@ -435,97 +477,3 @@ def fuse_multi_view_eth3d(ref_id, neighbor_ids, imgs, K, T_wc,
         ref_cloud, _ = ref_cloud.remove_statistical_outlier(nb_neighbors=30, std_ratio=2.0)
 
     return ref_cloud
-
-
-def prepare_for_meshing(cloud, nb_neighbors=50, std_ratio=2.0,
-                        radius=0.06, voxel=0.002):
-    """
-    Prepares a point cloud for mesh generation with ETH3D-specific parameters.
-
-    Args:
-        cloud: Input point cloud
-        nb_neighbors: Number of neighbors for statistical outlier removal
-        std_ratio: Standard deviation ratio for statistical outlier removal
-        radius: Radius for radius outlier removal
-        voxel: Voxel size for downsampling
-
-    Returns:
-        Prepared point cloud ready for meshing
-    """
-    if len(cloud.points) == 0:
-        print("Warning: Empty cloud provided to prepare_for_meshing")
-        return cloud
-
-    # Apply multi-stage filtering with parameters tuned for ETH3D indoor scenes
-    cloud = cloud.voxel_down_sample(voxel)
-    cloud, ind = cloud.remove_statistical_outlier(nb_neighbors=nb_neighbors, std_ratio=std_ratio)
-    print(f"prepare_for_meshing: Removed {len(ind)} statistical outliers.")
-    
-    cloud, ind = cloud.remove_radius_outlier(nb_points=30, radius=radius)
-    print(f"prepare_for_meshing: Removed {len(ind)} radius outliers.")
-
-    # Final normal estimation for meshing
-    if len(cloud.points) > 100:
-        cloud.estimate_normals(
-            search_param=o3d.geometry.KDTreeSearchParamHybrid(radius=0.03, max_nn=30))
-        cloud.orient_normals_consistent_tangent_plane(40)
-    else:
-        print("Warning: Not enough points after filtering to estimate normals for meshing.")
-
-    return cloud
-
-
-def create_mesh(cloud: o3d.geometry.PointCloud,
-                depth: int = 8,
-                trim: float = 0.25,
-                target_triangles: int = 500_000,
-                prepare_cloud: bool = True):
-    """
-    Builds a mesh using ball pivoting.
-    """
-    try:
-        # Prepare the cloud for meshing if requested
-        if prepare_cloud:
-            cloud = prepare_for_meshing(cloud)
-
-        if len(cloud.points) < 1000:
-            print(f"Warning: Too few points ({len(cloud.points)}) for reliable meshing.")
-            return None
-
-        # Ensure normals are available and consistently oriented
-        if not cloud.has_normals() or len(cloud.normals) == 0:
-            print("Warning: Normals not available, estimating for meshing.")
-            cloud.estimate_normals(search_param=o3d.geometry.KDTreeSearchParamHybrid(
-                radius=0.02, max_nn=30))
-            cloud.orient_normals_consistent_tangent_plane(50)
-
-        # Use ball pivoting for mesh creation
-        radii = [0.005, 0.01, 0.02, 0.04, 0.08] # Use increasing radii
-        print("Attempting ball pivoting mesh creation...")
-        mesh = o3d.geometry.TriangleMesh.create_from_point_cloud_ball_pivoting(
-            cloud, o3d.utility.DoubleVector(radii))
-
-        # Clean up the mesh
-        mesh.remove_degenerate_triangles()
-        mesh.remove_duplicated_triangles()
-        mesh.remove_duplicated_vertices()
-        mesh.remove_non_manifold_edges()
-        print(f"Ball pivoting created mesh with {len(mesh.vertices)} vertices and {len(mesh.triangles)} triangles.")
-
-        # Final cleanup and simplification
-        if len(mesh.vertices) > 0 and len(mesh.triangles) > 0:
-            mesh = mesh.crop(cloud.get_axis_aligned_bounding_box())
-            # Simplify to a reasonable number of triangles if it's very large
-            if len(mesh.triangles) > target_triangles * 1.5:
-                print(f"Simplifying mesh from {len(mesh.triangles)} to {target_triangles} triangles.")
-                mesh = mesh.simplify_quadric_decimation(target_triangles)
-            mesh.compute_vertex_normals()
-            print(f"Final mesh has {len(mesh.vertices)} vertices and {len(mesh.triangles)} triangles after cleanup.")
-        else:
-            print("Warning: Final mesh is empty after cleanup/simplification.")
-            return None # Return None if the mesh becomes empty
-
-        return mesh
-    except Exception as e:
-        print(f"Mesh reconstruction failed completely in create_mesh: {str(e)}")
-        return None
