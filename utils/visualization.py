@@ -93,26 +93,23 @@ def draw_epipolar_lines(img1, img2, pts1, lines2):
 
 
 def visualize_point_cloud(cloud, window_name="Point Cloud"):
-    """Visualize point cloud using Open3D.
-
-    Args:
-        cloud: Open3D point cloud
-        window_name: Title for visualization window
-    """
-    # Create visualizer
-    vis = o3d.visualization.Visualizer()
+    """Visualize point cloud using Open3D with point picking capability."""
+    vis = o3d.visualization.VisualizerWithVertexSelection()
     vis.create_window(window_name)
-
-    # Add geometry
     vis.add_geometry(cloud)
 
-    # Set default camera view
-    ctr = vis.get_view_control()
-    ctr.set_zoom(0.8)
-    ctr.set_front([0, 0, -1])
-    ctr.set_up([0, -1, 0])
+    # Set view and rendering options
+    vis.get_view_control().set_zoom(0.8)
+    opt = vis.get_render_option()
+    opt.point_size = 3.0
+    opt.background_color = np.array([0, 0, 0])
 
-    # Run visualizer
+    print("\nPoint Picking Instructions:")
+    print("1. Hold Shift + Left mouse button to select points")
+    print("2. Selected points will be highlighted in red")
+    print("3. Point coordinates will be printed in real-time")
+    print("4. Press 'Q' or close the window to exit")
+
     vis.run()
     vis.destroy_window()
 
@@ -181,6 +178,7 @@ def save_rectified_pair(rect_img1, rect_img2, save_path):
         cv2.line(combined, (0, y), (combined.shape[1], y), (0, 255, 0), 2)
     cv2.imwrite(save_path, combined)
 
+
 def visualize_file(file_path):
     file_path = Path(file_path)
 
@@ -213,17 +211,20 @@ def visualize_file(file_path):
 import sys
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Visualize a .ply file from a specified path.")
-    parser.add_argument(
-        "--path", type=str, required=False,
-        default="./dataset/office/results/cloud_single_pair_21_22.ply",
-        help="Path to the .ply file"
-    )
+    parser.add_argument("--path", type=str, required=False,
+                       default="./dataset/office/results/cloud_single_pair_21_22.ply",
+                       help="Path to the .ply file")
     args = parser.parse_args()
 
     path = Path(args.path)
-
     if not path.is_file():
         print(f"Error: The specified file does not exist: {path}")
         sys.exit(1)
 
+    cloud = o3d.io.read_point_cloud(str(path))
+    if not cloud.has_points():
+        print(f"Error: Could not load point cloud from {path}")
+        sys.exit(1)
+    
+    print(f"Loaded point cloud with {len(cloud.points)} points")
     visualize_file(path)
